@@ -27,7 +27,7 @@ If your cluster provides a prebuilt FlashAttention wheel or module, use that ins
 
 ## Checkpoints
 
-TODO: checkpoint release.
+Please find our 1028B SFT MLFM model [here](https://drive.google.com/drive/folders/1G1eI6DGMploU8rrt1pNhzbB-umH18Je3?usp=sharing).
 
 The run configs are:
 
