@@ -1,0 +1,71 @@
+model:
+  training_config: runs/sft/config.yml
+  checkpoint: null
+  config_overrides: []
+
+evaluation:
+  dataset_name: openai/gsm8k
+  dataset_config: main
+  split: test
+  dataset_path: data/gsm8k/test.jsonl
+  output_jsonl: outputs/evals/gsm8k/predictions.jsonl
+  max_examples: 1024
+  subset_size: 0
+  subset_percentage: 100.0
+  subset_seed: 0
+  subset_indices: []
+  subset_indices_file: null
+  batch_size: 32
+  num_fewshots: 0
+  seed: 0
+  answer_max_tokens: null
+  min_answer_tokens: 1
+  max_sequence_length: 512
+  pad_to_max_length: true
+  primary_extraction: flexible
+  prompt_style: sft_chat
+  instruction: ""
+  question_prefix: ""
+  answer_prefix: ""
+  fewshot_separator: "\n\n"
+
+sampling:
+  adapter_mode: finetuned
+  precision: float32
+  max_length: 1024
+  save_history: false
+  stepper: sde
+  steps: 256
+  bridge_sigma: from_config
+  confidence_source: final
+  confidence_quantile: 0.9
+
+  cfg:
+    enabled: true
+    scale: 1.0
+    mode: corrupt
+    condition_scope: prompt_only
+    target: velocity
+    logit_mode: prob_ratio
+    rescale: none
+
+  token_sampler:
+    strategy: gumbel
+    temperature: 0.1
+    top_p: 1.0
+    gumbel_dtype: float64
+    suppress_token_ids: []
+
+  time_distribution:
+    source: from_config
+    gamma_min: -6.0
+    gamma_max: 6.0
+    init_quantile: 0.99
+
+  confidence:
+    score: sample_prob
+
+  online_token_promotion:
+    confidence_threshold: 0.8
+    min_promote_tokens: 1
+    eos_policy: rank_separately

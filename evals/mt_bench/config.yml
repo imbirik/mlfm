@@ -1,0 +1,87 @@
+model:
+  training_config: runs/sft/config.yml
+  checkpoint: null
+  model_id: mlfm_sft
+  config_overrides: []
+
+evaluation:
+  question_file: data/mt_bench/question.jsonl
+  question_url: https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl
+  download_if_missing: true
+  answer_file: data/mt_bench/model_answer/{model_id}.jsonl
+  details_jsonl: outputs/evals/mt_bench/{model_id}_generation_details.jsonl
+  judgment_jsonl: null
+  judge_model: gpt-4o-2024-05-13
+  run_fastchat_judge: false
+  fastchat_llm_judge_dir: null
+  fastchat_bench_name: mt_bench
+  judge_parallel: 10
+  fastchat_python: null
+  fastchat_first_turn_only_questions: true
+  fastchat_copy_question_if_missing: true
+  first_turn_only: true
+  num_choices: 1
+  prompt_style: vicuna
+  fastchat_template: models/vicuna-7b-v1.5
+  use_fastchat_template: true
+  stop_strings:
+    - "</s>"
+    - "\nUSER:"
+    - "\nASSISTANT:"
+    - "\nUser:"
+    - "\nAssistant:"
+  stop_token_ids: []
+  max_examples: 80
+  subset_size: 0
+  subset_percentage: 100.0
+  subset_seed: 0
+  subset_indices: []
+  subset_question_ids: []
+  batch_size: 8
+  seed: 0
+  answer_max_tokens: null
+  min_answer_tokens: 1
+  max_sequence_length: 1024
+  pad_to_max_length: true
+  progress: true
+
+sampling:
+  adapter_mode: finetuned
+  precision: float32
+  max_length: 1024
+  save_history: false
+  stepper: sde
+  steps: 256
+  bridge_sigma: from_config
+  confidence_source: final
+  confidence_quantile: 0.95
+
+  cfg:
+    enabled: true
+    scale: 1.0
+    mode: corrupt
+    condition_scope: prompt_only
+    target: velocity
+    logit_mode: prob_ratio
+    rescale: none
+
+  token_sampler:
+    strategy: gumbel
+    temperature: 0.1
+    top_p: 1.0
+    gumbel_dtype: float64
+    suppress_token_ids: []
+
+  time_distribution:
+    source: from_config
+    gamma_min: -6.0
+    gamma_max: 6.0
+    init_quantile: 0.99
+
+  confidence:
+    score: sample_prob
+
+  online_token_promotion:
+    confidence_threshold: 0.8
+    min_promote_tokens: 1
+    eos_policy: rank_separately

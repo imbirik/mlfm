@@ -1,0 +1,361 @@
+# MLFM adaptation of an official SMDM checkpoint.
+# The official nieshen/SMDM weights are LitGPT-style safetensors, so this config
+# uses the local SMDM loader. Clone ML-GSAI/SMDM to ./external/SMDM or change
+# smdm_code_path to your checkout.
+
+# Use the MLFM objective.
+training_objective: mlfm
+
+# -------------------------
+# Backbone / Tokenizer
+# -------------------------
+# Backbone family. Used to fill model/tokenizer/data defaults and mask token id.
+backbone_type: smdm
+# Loader implementation for official ML-GSAI/SMDM LitGPT checkpoints.
+model_loader: smdm_litgpt
+# HF repo that hosts official SMDM checkpoint files.
+backbone_model_name_or_path: nieshen/SMDM
+# Official SMDM evaluation uses the TinyLlama tokenizer.
+tokenizer_name_or_path: TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T
+# Official SMDM size. This single field selects both Diff_LLaMA_{smdm_size}M
+# and the matching checkpoint in nieshen/SMDM/mdm_safetensors/.
+# Supported: 170, 231, 336, 472, 551, 629, 717, 831, 944, 1028, 1476.
+smdm_size: 1028
+# Local checkout of https://github.com/ML-GSAI/SMDM containing lit_gpt/.
+smdm_code_path: ./external/SMDM
+# Kept true for tokenizer/model compatibility.
+trust_remote_code: true
+# Official SMDM mask token id from ML-GSAI/SMDM evaluation code.
+mask_token_id: 32000
+
+# -------------------------
+# Pretokenized Data
+# -------------------------
+# Root for local packed/tokenized datasets. The submit script overrides these
+# paths to $PROJECTDIR/datasets/smdm/... before launch.
+tokenized_data_root: ./datasets
+# 50/50 training mix: OpenWebText and Proof-Pile-2, pretokenized with TinyLlama tokenizer.
+data_paths:
+  - ./datasets/smdm/owt/train
+  - ./datasets/smdm/proof_pile2/train
+# Held-out validation splits, with the same source order as data_paths.
+eval_data_paths:
+  - ./datasets/smdm/owt/validation
+  - ./datasets/smdm/proof_pile2/validation
+# Per-batch source mixture weights for the two datasets above.
+data_mix_weights: [0.5, 0.5]
+# SMDM official checkpoints use block_size 2048.
+max_length: 1024
+
+# -------------------------
+# Prompt/Response SFT Stage
+# -------------------------
+# Dedicated prompt/response stage after resuming from an adaptation checkpoint.
+training_stage: sft
+# SFT should initialize adapter weights from resume=... but start its own
+# optimizer, step counter, token counters, dataloader position, and LR schedule.
+# For resuming an interrupted unfreeze-SFT checkpoint with optimizer state, override
+# reset_resume_training_state=false and resume_adapter_weight_source=model.
+reset_resume_training_state: true
+# Initialize from the pretraining adapter EMA, since pretraining validation and
+# sampling use EMA-smoothed adapters.
+resume_adapter_weight_source: ema
+# Optional packed+SFT microbatch mixing for future hybrid runs. Dedicated SFT
+# runs ignore this and use only SFT datasets.
+sft_mix_weight: 0.0
+# Dedicated SFT target: 256 global batch * 2 accum * 1024 tokens * 30000 steps.
+sft_total_tokens: 15728640000
+sft_max_steps: 30000
+sft_max_length: 1024
+# SFT uses one dataset source per microbatch so dynamic cropping is efficient.
+# The 50-slot source schedule exactly represents the configured 20/36/12/12/20 mix.
+sft_batching_mode: source_schedule
+sft_source_schedule_slots: 50
+sft_dynamic_crop: true
+sft_dynamic_crop_multiple: 64
+# SFT source mixture: keep response/code ability while making math the dominant
+# signal for arithmetic repair.
+sft_source_weights: {general: 0.2, math: 0.6, code: 0.2}
+# Math split: emphasize GSM8K-Aug-NL for direct arithmetic supervision while keeping
+# MetaMathQA and NuminaMath-CoT as broader reasoning data.
+sft_math_source_weights: {gsm8k_aug: 0.0, gsm8k_aug_nl: 0.6, metamathqa: 0.2, math_reasoning: 0.2}
+sft_full_response_mask_prob: 0.5
+# Pretokenize these with scripts/tokenize_sft_dataset.py before setting
+# training_stage: sft. These are paths to save_to_disk outputs.
+sft_general_data_paths:
+  - ./datasets/sft/sharegpt_first_round/train
+sft_math_data_paths:
+  - ./datasets/sft/numinamath_cot/train
+sft_math_gsm8k_data_paths: []
+sft_math_gsm8k_nl_data_paths:
+  - ./datasets/sft/gsm8k_aug_nl/train
+sft_math_metamathqa_data_paths:
+  - ./datasets/sft/metamathqa/train
+sft_code_data_paths:
+  - ./datasets/sft/opencodeinstruct_short/train
+sft_eval_data_paths: []
+
+# -------------------------
+# Unfrozen Base Model
+# -------------------------
+# Train pretrained backbone weights during SFT, while keeping token embeddings frozen.
+freeze_backbone: false
+# Keep token embeddings frozen even if freeze_backbone is changed later.
+freeze_embeddings: true
+# Kept true for consistency; the LitGPT SMDM wrapper does not currently call HF checkpointing.
+gradient_checkpointing: true
+
+# -------------------------
+# Backbone LoRA
+# -------------------------
+# LoRA rank for attention and MLP projection modules. Set to 0 for output-only LoRA.
+lora_rank: 256
+# LoRA alpha; effective scale is alpha / rank.
+lora_alpha: 512.0
+# Dropout applied inside LoRA adapters.
+lora_dropout: 0.05
+# Keep adapted LoRA deltas, but allow the wrapped base attention/MLP matrices
+# to train with the separate base_lr group below.
+lora_freeze_base: false
+# Explicit LitGPT SMDM Linear module suffixes to wrap. Token embeddings and lm_head are excluded.
+# For Diff_LLaMA SMDM, attn/proj cover fused QKV + attention output projection,
+# while w1/w2/w3 cover the SwiGLU gate/up/down MLP projections.
+lora_target_modules:
+  - attn
+  - proj
+  - w1
+  - w2
+  - w3
+
+# -------------------------
+# AdaLN / Time Conditioning
+# -------------------------
+# Attach timestep-conditioned adapters around normalization layers.
+adaln: true
+# Adapter shape:
+#   vanilla -> Linear(..., 2 * norm_hidden), shift/scale.
+#   dit      -> DiT-style block wrapper: shift/scale before attn/mlp, branch gates on residual outputs.
+adaln_mode: dit
+# Sinusoidal timestep embedding width before the MLP. This matches MLFM/DiT's default.
+adaln_time_embed_dim: 256
+# Middle timestep MLP width. Shape:
+#   Sinusoidal(adaln_time_embed_dim) -> Linear(adaln_hidden_dim)
+#   -> SiLU -> Linear(adaln_hidden_dim)
+# Final modulation shape is derived as:
+#   Linear(adaln_hidden_dim, 2 * actual_norm_hidden) for vanilla
+#   Linear(adaln_hidden_dim, 6 * actual_norm_hidden) for dit
+# 0 means use the resolved SMDM hidden size for the selected smdm_size.
+adaln_hidden_dim: 512
+# Only norm-like modules whose names include one of these strings are wrapped.
+adaln_include_patterns:
+  - norm
+  - ln_f
+# Modules whose names include these strings are never wrapped.
+adaln_exclude_patterns:
+  - embed
+  - embedding
+  - wte
+  - lm_head
+  - output
+
+# -------------------------
+# Optional Output-Head LoRA
+# -------------------------
+# Enabled to let the final logits-to-token readout adapt to the embedding diffusion objective.
+# To train only the output projection delta, set lora_rank: 0 and lora_output_head: true.
+lora_output_head: true
+# Output-head LoRA rank if lora_output_head is enabled.
+lora_output_rank: 256
+# Output-head LoRA alpha; effective scale is alpha / rank.
+lora_output_alpha: 256.0
+# Dropout inside output-head LoRA.
+lora_output_dropout: 0.0
+# SMDM input embeddings and lm_head are not tied. In this unfreeze run the
+# lm_head base weights train with base_lr, while output_delta adds a LoRA delta.
+lora_output_tied_policy: output_delta
+
+# -------------------------
+# MLFM Objective
+# -------------------------
+# Time parameterization options: log_nsr or t. log_nsr samples gamma and then
+# converts it to the forward-process time/noise coefficients.
+noise_parameterization: log_nsr
+# Forward process for the final runs.
+# brownian_bridge uses x = m + t(gamma) * (e - m)
+#   + brownian_bridge_sigma * sqrt(t(gamma) * (1 - t(gamma))) * eps,
+#   where t(gamma) = sigmoid(log(brownian_bridge_sigma^2) - gamma).
+forward_process: brownian_bridge
+# Brownian bridge noise scale; also affects logNSR-to-bridge-time conversion.
+brownian_bridge_sigma: 0.2
+# Brownian bridge covariance options: isotropic or empirical_diag.
+bridge_noise_covariance: isotropic
+# empirical_diag estimates per-coordinate training-token embedding variance online,
+# uses isotropic noise until bridge_noise_diag_min_tokens, then freezes at max_tokens.
+bridge_noise_diag_max_tokens: 262144
+bridge_noise_diag_min_tokens: 8192
+bridge_noise_diag_shrinkage: 0.05
+bridge_noise_diag_eps: 1.0e-8
+# Reserved for future low-rank covariance modes; ignored for empirical_diag.
+bridge_noise_rank: 0
+# Gamma schedule options for noise_parameterization=log_nsr:
+# SFT uses a conservative mixture of the active empirical CE CDF and a small uniform tail hedge.
+gamma_schedule: active_mixture
+# log_nsr-only clamped gamma range for training/eval/sampling diagnostics.
+gamma_min: -10.0
+gamma_max: 6.0
+# log_nsr-only Gumbel/normal location and scale for gamma sampling.
+gamma_loc: -2.5
+gamma_scale: 2.0
+gamma_active_mixture_weights: [0.1, 0.0, 0.9]
+# Generic active gamma curve adaptation: estimate from no-EOS CE in the
+# high-mask SFT diagnostic bin [0.95, 1.00], then EMA-update the active inverse
+# CDF used by training and sampling.
+gamma_curve_adapt_enabled: true
+gamma_curve_estimator: empirical
+gamma_curve_shape_min: 0.05
+gamma_curve_shape_max: 20.0
+gamma_curve_update_rate: 0.05
+gamma_curve_quantile_points: 101
+gamma_curve_mask_p_min: 0.95
+gamma_curve_mask_p_max: 1.0
+gamma_curve_min_bins: 8
+gamma_curve_min_examples: 4096
+gamma_curve_smoothing: isotonic
+gamma_curve_min_r2: 0.0
+gamma_curve_updates: 0
+gamma_curve_last_update_step: 0
+restore_adaptive_gamma_state: true
+restore_loss_diagnostic_state: false
+# Loss diagnostic estimator options:
+#   ema    -> exponentially decayed binned summaries for fast online gamma adaptation.
+#   window -> previous rolling-window summaries.
+loss_diagnostic_estimator: ema
+loss_diagnostic_ema_decay: 0.98
+# Time conditioning options: gamma or t. gamma passes raw logNSR into AdaLN.
+time_conditioning: gamma
+# Mask-ratio sampler options: maskgit_cosine or uniform.
+mask_ratio_sampler: maskgit_cosine
+# Power for maskgit_cosine. >1 shifts toward smaller mask ratios; <1 toward larger ratios.
+maskgit_cosine_power: 1.0
+# Stratify training mask_p and gamma samples so each batch uses one sample per quantile.
+use_low_discrepancy: true
+# Minimum corruption fraction per sequence.
+mask_p_min: 0.05
+# Maximum corruption fraction per sequence.
+mask_p_max: 1.0
+# CE reduction options: inverse_count, inverse_p, or none.
+mlfm_loss_weighting: inverse_count
+# Weight for the posterior-mean embedding MSE term on corrupted tokens.
+# z0_theta = E[p_theta(x_i | z_t)] is compared to the clean embedding z0.
+# Set to 0.0 to train with CE only.
+lambda_mse: 10.0
+
+# -------------------------
+# Optimization
+# -------------------------
+# Adapter optimizer.
+optimizer: adamw
+# Preferred mixed precision; falls back to fp32 when unsupported.
+precision: bf16
+# Optional torch.compile; keep false for debug runs.
+compile: false
+# auto selects CUDA when available.
+device: auto
+# Global batch across all ranks.
+global_batch_size: 256
+# Number of microbatches accumulated before one optimizer step.
+grad_accum_steps: 2
+# Total optimizer steps.
+max_train_steps: 150000
+# Linear warmup steps before cosine decay.
+warmup_steps: 200
+# Final LR as a fraction of each parameter group's initial LR.
+min_lr_ratio: 0.1
+# LR for unfrozen pretrained backbone weights.
+base_lr: 1.0e-5
+# LR for backbone LoRA adapters.
+lora_lr: 5.0e-5
+# LR for AdaLN/time-conditioning adapters.
+adaln_lr: 5.0e-5
+# LR for output-head LoRA if enabled.
+lora_output_lr: 5.0e-5
+# AdamW weight decay, with norms/biases/adapter scale-shift excluded in code.
+weight_decay: 0.01
+# AdamW weight decay for unfrozen pretrained backbone weights.
+base_weight_decay: 0.1
+# Global gradient clipping norm.
+grad_clip: 1.0
+# EMA tracks the full trainable state in this unfreeze run: unfrozen base weights,
+# LoRA deltas, AdaLN/time adapters, and output-head LoRA.
+use_ema: true
+# EMA decay applied after each optimizer step.
+ema_decay1: 0.999
+# Run validation with EMA-smoothed trainable weights.
+eval_use_ema: true
+
+# -------------------------
+# Logging / Evaluation / Checkpointing
+# -------------------------
+# Train metrics logging interval in optimizer steps.
+log_freq: 20
+# Enable sampled gamma/mask diagnostics in WandB.
+sample_diagnostics: true
+# Rolling-window cap used by loss_diagnostic_estimator=window.
+sample_diagnostics_window_batches: 2000
+# Log loss diagnostic plots whenever this many new train batches have been collected.
+sample_diagnostics_update_every_batches: 200
+# Target average examples per (mask_p interval, gamma bin) cell; gamma bins are derived from this.
+loss_diagnostics_target_samples_per_cell: 200
+# Fixed mask_p interval width, e.g. 0.05 gives [0.05, 0.10), ..., [0.95, 1.00].
+loss_diagnostics_mask_bin_width: 0.05
+# Estimate embedding geometry from actual training-token frequencies rather
+# than treating every vocabulary row uniformly. These caps are per rank.
+embedding_geometry_empirical_tokens: 65536
+embedding_geometry_empirical_batches: 64
+# Validation interval in optimizer steps.
+eval_freq: 5000
+# Adapter checkpoint interval in optimizer steps.
+save_freq: 10000
+# Maximum validation batches for primary CE/PPL.
+eval_max_batches: 4
+# Number of examples for small generation validation.
+val_num_generation_samples: 64
+# Keep generation smoke validation off by default because it is expensive for large runs.
+run_generation_validation: true
+# Score decoded validation generations with an external causal LM and log scalar PPL plots.
+online_eval: true
+eval_ppl_model: gpt2-large
+eval_ppl_batch_size: 8
+eval_ppl_max_length: 1024
+generation_ppl_sample_count: 64
+val_generation_steps: 256
+# Upper bound used when val_generation_steps is 0.
+val_generation_steps_cap: 1024
+# Camera-ready validation generation uses SDE Brownian-bridge steps.
+generation_sampler: sde
+# Number of decoded validation generations to show in a WandB table on eval steps.
+wandb_generation_sample_count: 8
+# Max characters per decoded target/generated sample in the WandB table.
+wandb_generation_max_chars: 8000
+# Prompt-conditional SFT generations logged per source type: general/math/code.
+val_sft_prompt_generation_samples_per_type: 2
+val_sft_prompt_generation_max_batches: 16
+# SFT validation logs only prompt-conditioned tables; unconditional generations are disabled here.
+val_unconditional_generation_samples: 0
+# GSM8K conditional validation samples: prompt is the problem, masked span is answer space.
+# Generated prompt + answer length follows max_length.
+val_gsm8k_generation_samples: 16
+gsm8k_eval_path: data/gsm8k/test.jsonl
+# Output directory for configs, metrics.jsonl, and checkpoints.
+# {smdm_size} is expanded by the SMDM defaults resolver.
+# Full checkpoints are required here because base weights are trainable.
+save_full_model: true
+output_dir: ./runs/sft/output_smdm_{smdm_size}M_sft
+# Enable WandB logging.
+use_wandb: false
+# WandB project name if use_wandb is enabled.
+wandb_project: MLFM
+wandb_run_name: smdm-sft-unfreeze-gamma-sft-1028M-30k-base-lr-1e-5-opencode-short
+wandb_group: smdm-sft-unfreeze-gamma-sft-30k
+wandb_job_type: sft
+wandb_tag: sft,unfreeze,active_gamma_curve,base_lr_1e-5,sigma_0p2,isotropic,low_discrepancy,numinamath_cot,metamathqa,gsm8k_aug_nl,opencode_short
